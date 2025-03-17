@@ -3,155 +3,163 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types'
-import type { AppState, BinaryFileData, BinaryFiles, Collaborator, ExcalidrawImperativeAPI, Gesture } from '@excalidraw/excalidraw/types/types'
-import { Portal } from './Portal'
-import { restoreElements } from '@excalidraw/excalidraw'
-import { throttle } from 'lodash'
-import { hashElementsVersion, reconcileElements } from './util'
-import { registerFilesHandler } from '../files/files.ts'
+import type { ExcalidrawElement } from '@excalidraw/excalidraw/types/element/types';
+import type { AppState, BinaryFileData, BinaryFiles, Collaborator, ExcalidrawImperativeAPI, Gesture } from '@excalidraw/excalidraw/types/types';
+import { Portal } from './Portal';
+import { restoreElements } from '@excalidraw/excalidraw';
+import { throttle } from 'lodash';
+import { hashElementsVersion, reconcileElements } from './util';
+import { registerFilesHandler } from '../files/files.ts';
 
 export class Collab {
 
-	excalidrawAPI: ExcalidrawImperativeAPI
-	fileId: number
-	portal: Portal
-	publicSharingToken: string | null
-	setViewModeEnabled: React.Dispatch<React.SetStateAction<boolean>>
-	lastBroadcastedOrReceivedSceneVersion: number = -1
-	private collaborators = new Map<string, Collaborator>()
-	private files = new Map<string, BinaryFileData>()
+    excalidrawAPI: ExcalidrawImperativeAPI;
+    fileId: number;
+    portal: Portal;
+    publicSharingToken: string | null;
+    setViewModeEnabled: React.Dispatch<React.SetStateAction<boolean>>;
+    lastBroadcastedOrReceivedSceneVersion: number = -1;
+    private collaborators = new Map<string, Collaborator>();
+    private files = new Map<string, BinaryFileData>();
 
-	constructor(excalidrawAPI: ExcalidrawImperativeAPI, fileId: number, publicSharingToken: string | null, setViewModeEnabled: React.Dispatch<React.SetStateAction<boolean>>) {
-		this.excalidrawAPI = excalidrawAPI
-		this.fileId = fileId
-		this.publicSharingToken = publicSharingToken
-		this.setViewModeEnabled = setViewModeEnabled
+    // 定义节流函数
+    private throttledBroadcastMouseLocation = throttle((payload: {
+        pointersMap: Gesture['pointers'],
+        pointer: { x: number; y: number; tool: 'laser' | 'pointer' },
+        button: 'down' | 'up'
+    }) => {
+        this.portal.socket && this.portal.broadcastMouseLocation(payload);
+    }, 200); // 节流时间间隔为200ms，可以根据实际情况调整
 
-		this.portal = new Portal(`${fileId}`, this, publicSharingToken)
-		registerFilesHandler(this.excalidrawAPI, this)
-	}
+    constructor(excalidrawAPI: ExcalidrawImperativeAPI, fileId: number, publicSharingToken: string | null, setViewModeEnabled: React.Dispatch<React.SetStateAction<boolean>>) {
+        this.excalidrawAPI = excalidrawAPI;
+        this.fileId = fileId;
+        this.publicSharingToken = publicSharingToken;
+        this.setViewModeEnabled = setViewModeEnabled;
 
-	async startCollab() {
-		if (this.portal.socket) return
+        this.portal = new Portal(`${fileId}`, this, publicSharingToken);
+        registerFilesHandler(this.excalidrawAPI, this);
+    }
 
-		this.portal.connectSocket()
+    async startCollab() {
+        if (this.portal.socket) return;
 
-		this.excalidrawAPI.onChange(this.onChange)
-	}
+        this.portal.connectSocket();
 
-	getSceneElementsIncludingDeleted = () => {
-		return this.excalidrawAPI.getSceneElementsIncludingDeleted()
-	}
+        this.excalidrawAPI.onChange(this.onChange);
+    }
 
-	_reconcileElements = (remoteElements: readonly ExcalidrawElement[]) => {
-		const restoredRemoteElements = restoreElements(remoteElements, null)
-		const localElements = this.getSceneElementsIncludingDeleted()
-		const appState = this.excalidrawAPI.getAppState()
+    getSceneElementsIncludingDeleted = () => {
+        return this.excalidrawAPI.getSceneElementsIncludingDeleted();
+    }
 
-		return reconcileElements(localElements, restoredRemoteElements, appState)
-	}
+    _reconcileElements = (remoteElements: readonly ExcalidrawElement[]) => {
+        const restoredRemoteElements = restoreElements(remoteElements, null);
+        const localElements = this.getSceneElementsIncludingDeleted();
+        const appState = this.excalidrawAPI.getAppState();
 
-	handleRemoteSceneUpdate = (elements: ExcalidrawElement[]) => {
-		this.excalidrawAPI.updateScene({
-			elements,
-		},
-		)
-	}
+        return reconcileElements(localElements, restoredRemoteElements, appState);
+    }
 
-	private getLastBroadcastedOrReceivedSceneVersion = () => {
-		return this.lastBroadcastedOrReceivedSceneVersion
-	}
+    handleRemoteSceneUpdate = (elements: ExcalidrawElement[]) => {
+        this.excalidrawAPI.updateScene({
+            elements,
+        });
+    }
 
-	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	private onChange = (elements: readonly ExcalidrawElement[], _state: AppState, files: BinaryFiles) => {
-		if (hashElementsVersion(elements)
-			> this.getLastBroadcastedOrReceivedSceneVersion()
-		) {
-			this.lastBroadcastedOrReceivedSceneVersion = hashElementsVersion(elements)
-			throttle(() => {
-				this.portal.broadcastScene('SCENE_INIT', elements)
+    private getLastBroadcastedOrReceivedSceneVersion = () => {
+        return this.lastBroadcastedOrReceivedSceneVersion;
+    }
 
-				const syncedFiles = Array.from(this.files.keys())
-				const newFiles = Object.keys(files).filter((id) => !syncedFiles.includes(id)).reduce((acc, id) => {
-					acc[id] = files[id]
-					return acc
-				}, {} as BinaryFiles)
-				if (Object.keys(newFiles).length > 0) {
-					this.portal.sendImageFiles(newFiles)
-				}
-			})()
-		}
-	}
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    private onChange = (elements: readonly ExcalidrawElement[], _state: AppState, files: BinaryFiles) => {
+        if (hashElementsVersion(elements)
+            > this.getLastBroadcastedOrReceivedSceneVersion()
+        ) {
+            this.lastBroadcastedOrReceivedSceneVersion = hashElementsVersion(elements);
+            throttle(() => {
+                this.portal.broadcastScene('SCENE_INIT', elements);
 
-	onPointerUpdate = (payload: {
-		pointersMap: Gesture['pointers'],
-		pointer: { x: number; y: number; tool: 'laser' | 'pointer' },
-		button: 'down' | 'up'
-	}) => {
-		payload.pointersMap.size < 2 && this.portal.socket && this.portal.broadcastMouseLocation(payload)
-	}
+                const syncedFiles = Array.from(this.files.keys());
+                const newFiles = Object.keys(files).filter((id) => !syncedFiles.includes(id)).reduce((acc, id) => {
+                    acc[id] = files[id];
+                    return acc;
+                }, {} as BinaryFiles);
+                if (Object.keys(newFiles).length > 0) {
+                    this.portal.sendImageFiles(newFiles);
+                }
+            }, 500)(); // 场景更新节流时间间隔为500ms，可以根据实际情况调整
+        }
+    }
 
-	updateCollaborators = (users: {
-		user: {
-			id: string,
-			name: string
-		},
-		socketId: string,
-		pointer: { x: number, y: number, tool: 'pointer' | 'laser' },
-		button: 'down' | 'up',
-		selectedElementIds: AppState['selectedElementIds']
-	}[]) => {
-		const collaborators = new Map<string, Collaborator>()
+    onPointerUpdate = (payload: {
+        pointersMap: Gesture['pointers'],
+        pointer: { x: number; y: number; tool: 'laser' | 'pointer' },
+        button: 'down' | 'up'
+    }) => {
+        payload.pointersMap.size < 2 && this.throttledBroadcastMouseLocation(payload);
+    }
 
-		users.forEach((payload) => {
-			collaborators.set(payload.user.id, {
-				username: payload.user.name,
-				...payload,
-			})
-		})
+    updateCollaborators = (users: {
+        user: {
+            id: string,
+            name: string
+        },
+        socketId: string,
+        pointer: { x: number, y: number, tool: 'pointer' | 'laser' },
+        button: 'down' | 'up',
+        selectedElementIds: AppState['selectedElementIds']
+    }[]) => {
+        const collaborators = new Map<string, Collaborator>();
 
-		this.excalidrawAPI.updateScene({ collaborators })
+        users.forEach((payload) => {
+            collaborators.set(payload.user.id, {
+                username: payload.user.name,
+                ...payload,
+            });
+        });
 
-		this.collaborators = collaborators
-	}
+        this.excalidrawAPI.updateScene({ collaborators });
 
-	updateCursor = (payload: {
-		socketId: string,
-		pointer: { x: number, y: number, tool: 'pointer' | 'laser' },
-		button: 'down' | 'up',
-		selectedElementIds: AppState['selectedElementIds'],
-		user: {
-			id: string,
-			name: string
-		}
-	}) => {
-		this.excalidrawAPI.updateScene({
-			collaborators: this.collaborators.set(payload.user.id, {
-				...this.collaborators.get(payload.user.id),
-				...payload,
-				username: payload.user.name,
-			}),
-		})
-	}
+        this.collaborators = collaborators;
+    }
 
-	scrollToContent = () => {
-		const elements = this.excalidrawAPI.getSceneElements()
+    updateCursor = (payload: {
+        socketId: string,
+        pointer: { x: number, y: number, tool: 'pointer' | 'laser' },
+        button: 'down' | 'up',
+        selectedElementIds: AppState['selectedElementIds'],
+        user: {
+            id: string,
+            name: string
+        }
+    }) => {
+        this.excalidrawAPI.updateScene({
+            collaborators: this.collaborators.set(payload.user.id, {
+                ...this.collaborators.get(payload.user.id),
+                ...payload,
+                username: payload.user.name,
+            }),
+        });
+    }
 
-		this.excalidrawAPI.scrollToContent(elements, {
-			fitToContent: true,
-			animate: true,
-			duration: 500,
-		})
-	}
+    scrollToContent = () => {
+        const elements = this.excalidrawAPI.getSceneElements();
 
-	makeBoardReadOnly = () => {
-		this.setViewModeEnabled(true)
-	}
+        this.excalidrawAPI.scrollToContent(elements, {
+            fitToContent: true,
+            animate: true,
+            duration: 500,
+        });
+    }
 
-	addFile = (file: BinaryFileData) => {
-		this.files.set(file.id, file)
-		this.excalidrawAPI.addFiles([file])
-	}
+    makeBoardReadOnly = () => {
+        this.setViewModeEnabled(true);
+    }
+
+    addFile = (file: BinaryFileData) => {
+        this.files.set(file.id, file);
+        this.excalidrawAPI.addFiles([file]);
+    }
 
 }
